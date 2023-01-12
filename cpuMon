@@ -1,0 +1,156 @@
+#!/usr/bin/env php
+<?php
+
+$shortopts = "";
+$longopts = [
+    "type:",
+    "uuid::",    // Необязательное значение
+];
+$options = getopt($shortopts, $longopts);
+
+if (!isset($options['type']) || !in_array($options['type'], ['prstat', 'vmadm'])) {
+    echo 'You must set --type=prstat or --type=vmadm' . PHP_EOL;
+    exit;
+}
+
+switch ($options['type']) {
+    case 'prstat':
+        $command = 'prstat -Z';
+        $process = new Process($command);
+        sleep(1);
+        $process->outputPrstat($options['uuid'] ?? null);
+        $process->stop();
+        break;
+    case 'vmadm':
+        $command = 'vmadm list';
+        $process = new Process($command, '.command_output', true);
+        $process->outputVmadm();
+        $process->deleteFile();
+        break;
+}
+
+class Process
+{
+    private $pid;
+    private $command;
+    public $file;
+    public $direct;
+
+    public function __construct($cl = false, $file = '.command_output', $direct = false)
+    {
+
+        $this->file = $file;
+
+        if ($cl != false) {
+            $this->command = $cl;
+            $this->runCom($direct);
+        }
+    }
+
+    private function runCom($direct = false)
+    {
+        if ($direct) {
+            $command = $this->command . ' > ' . $this->file;
+        } else {
+            $command = 'nohup ' . $this->command . ' > ' . $this->file . ' 2>&1 & echo $!';
+        }
+
+        exec($command, $op);
+        @$this->pid = (int)$op[0];
+    }
+
+    public function getOutput()
+    {
+        return file_get_contents($this->file);
+    }
+
+    public function outputVmadm()
+    {
+        $output = $this->getOutput();
+
+        if (empty($output)) {
+            echo 'No output here..' . PHP_EOL;
+            exit();
+        }
+
+        $output = explode("\n", $output);
+
+        foreach ($output as $row) {
+            if (preg_match('/(?<uuid>[0-9a-z\-]+)\s+(?<type>[A-Z]+)\s+(?<ram>[0-9]+)\s+(?<state>[a-z]+)\s+(?<alias>[a-zA-Z0-9-]+)/', $row, $m)) {
+                if (isset($m['state']) && $m['state'] == 'running') {
+                    echo $m['uuid'] . ' - ' . $m['alias'] . PHP_EOL;
+                }
+            }
+        }
+    }
+
+    public function outputPrstat($uuid)
+    {
+        $output = $this->getOutput();
+
+        if (empty($output)) {
+            echo 'No output here..' . PHP_EOL;
+            exit();
+        }
+
+        $output = explode("\n", $output);
+
+        $print = [];
+
+        // сгрупируем по зонам, на случай если данные задублируются
+        foreach ($output as $row) {
+            if (preg_match('/(?<cpu>(\d{0,2}\.\d{0,2}))\%\s(?<zone>[0-9a-z\-]+$)/', $row, $m)) {
+                if (isset($m['zone']) && isset($m['cpu'])) {
+                    $print[$m['zone']] = $m['cpu'];
+                }
+            }
+        }
+
+        if (isset($uuid) && !empty($uuid)) {
+            echo $print[$uuid] . '%' . PHP_EOL;
+            exit();
+        }
+
+        foreach ($print as $zone => $cpu) {
+            echo 'Zone: ' . $zone . ' - ' . $cpu . ' %' . PHP_EOL;
+        }
+    }
+
+    public function setPid($pid)
+    {
+        $this->pid = $pid;
+    }
+
+    public function getPid()
+    {
+        return $this->pid;
+    }
+
+    public function status()
+    {
+        $command = 'ps -p ' . $this->pid;
+        exec($command, $op);
+        if (!isset($op[1])) return false;
+        else return true;
+    }
+
+    public function start()
+    {
+        if ($this->command != '') $this->runCom();
+        else return true;
+    }
+
+    public function stop()
+    {
+        $command = 'kill ' . $this->pid;
+        exec($command);
+        unlink($this->file);
+        if ($this->status() == false) return true;
+        else return false;
+    }
+
+    public function deleteFile()
+    {
+        unlink($this->file);
+    }
+}
